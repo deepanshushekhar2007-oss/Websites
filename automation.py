@@ -18,28 +18,28 @@ from telegram.ext import (
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ================== WEB SERVER (FOR RENDER PORT) ==================
+# ================= WEB SERVER FOR RENDER =================
 from flask import Flask
 from threading import Thread
 
-app_web = Flask(__name__)
+web_app = Flask(__name__)
 
-@app_web.route("/")
+@web_app.route("/")
 def home():
     return "Bot is running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    app_web.run(host="0.0.0.0", port=port)
-# ================================================================
+    web_app.run(host="0.0.0.0", port=port)
+# ==========================================================
 
-# Load environment variables
+# Load ENV
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
@@ -48,52 +48,79 @@ WAITING_FOR_DELAY = 2
 WAITING_FOR_SCHEDULE_TIME = 3
 
 user_data_store = {}
+scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
-scheduler = AsyncIOScheduler(timezone=pytz.timezone('Asia/Kolkata'))
-
-
-# ================= TELEGRAM BOT =================
+# ================= START MENU =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id not in user_data_store:
         user_data_store[user_id] = {
-            'accounts': [],
-            'delay': 250,
-            'schedule': None,
-            'is_running': False
+            "accounts": [],
+            "delay": 250,
+            "schedule": None,
+            "is_running": False,
         }
 
     keyboard = [
-        [InlineKeyboardButton("➕ Add Account", callback_data='add_account'),
-         InlineKeyboardButton("📋 List Linked Accounts", callback_data='list_accounts')],
-        [InlineKeyboardButton("⏱ Set Delay", callback_data='set_delay'),
-         InlineKeyboardButton("📅 Schedule (IST)", callback_data='schedule')],
-        [InlineKeyboardButton("▶️ Start Messaging", callback_data='start_messaging'),
-         InlineKeyboardButton("⏹ Stop", callback_data='stop')],
-        [InlineKeyboardButton("🚪 Logout All", callback_data='logout')]
+        [InlineKeyboardButton("➕ Add Account", callback_data="add_account")],
+        [InlineKeyboardButton("🔙 Refresh", callback_data="refresh")]
     ]
 
     msg = (
         "🤖 *WhatsApp Web Auto-Messenger Bot*\n\n"
+        f"📱 Linked Accounts: {len(user_data_store[user_id]['accounts'])}\n"
         f"⏱ Delay: {user_data_store[user_id]['delay']} sec\n"
-        f"📅 Schedule: {user_data_store[user_id]['schedule'] or 'Not set'}\n"
-        f"📱 Linked Accounts: {len(user_data_store[user_id]['accounts'])}"
+        f"📅 Schedule: {user_data_store[user_id]['schedule'] or 'Not set'}"
     )
 
     if update.message:
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await update.message.reply_text(
+            msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        )
     else:
-        await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await update.callback_query.edit_message_text(
+            msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        )
 
+# ================= BUTTON HANDLER =================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    if query.data == "add_account":
+        await query.edit_message_text(
+            "📱 Send your WhatsApp number with country code.\nExample: +919876543210"
+        )
+        return WAITING_FOR_NUMBER
+
+    elif query.data == "refresh":
+        await start(update, context)
+
+    return ConversationHandler.END
+
+# ================= RECEIVE NUMBER =================
+
+async def receive_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    number = update.message.text
+    user_id = update.effective_user.id
+
+    await update.message.reply_text("⏳ Generating pairing code...")
+
+    asyncio.create_task(get_whatsapp_pairing_code(number, user_id, context))
+    return ConversationHandler.END
+
+# ================= PLAYWRIGHT LOGIN =================
 
 async def get_whatsapp_pairing_code(number, user_id, context):
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
 
             browser_context = await browser.new_context()
@@ -103,37 +130,40 @@ async def get_whatsapp_pairing_code(number, user_id, context):
             await page.wait_for_selector("span:has-text('Link with phone number')", timeout=60000)
             await page.click("span:has-text('Link with phone number')")
 
-            await page.wait_for_selector('input[type="text"]')
-            await page.fill('input[type="text"]', number)
+            await page.wait_for_selector("input[type='text']")
+            await page.fill("input[type='text']", number)
             await page.click("div[role='button']:has-text('Next')")
 
-            await page.wait_for_selector('div[data-testid="pairing-code"]', timeout=30000)
-            code = await page.inner_text('div[data-testid="pairing-code"]')
+            await page.wait_for_selector("div[data-testid='pairing-code']", timeout=30000)
+            code = await page.inner_text("div[data-testid='pairing-code']")
 
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"🔑 Pairing code for {number}:\n\n*{code}*",
-                parse_mode="Markdown"
+                text=f"🔑 Pairing Code:\n\n*{code}*",
+                parse_mode="Markdown",
             )
 
-            await page.wait_for_selector('div[data-testid="chat-list"]', timeout=120000)
+            await page.wait_for_selector("div[data-testid='chat-list']", timeout=120000)
 
-            user_data_store[user_id]['accounts'].append({
-                'number': number,
-                'context': browser_context
-            })
+            user_data_store[user_id]["accounts"].append(
+                {"number": number, "context": browser_context}
+            )
 
-            await context.bot.send_message(chat_id=user_id, text=f"✅ {number} linked successfully!")
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"✅ Account {number} linked successfully!",
+            )
 
     except Exception as e:
         logger.error(e)
-        await context.bot.send_message(chat_id=user_id, text="❌ Login failed or timed out.")
+        await context.bot.send_message(
+            chat_id=user_id, text="❌ Login failed or timed out."
+        )
 
-
-# ================= ASYNC MAIN =================
+# ================= MAIN =================
 
 async def async_main():
-    Thread(target=run_web).start()  # Start Flask server for Render
+    Thread(target=run_web).start()
 
     if not TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN missing")
@@ -143,15 +173,23 @@ async def async_main():
 
     scheduler.start()
 
-    application.add_handler(CommandHandler("start", start))
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(button_handler),
+        ],
+        states={
+            WAITING_FOR_NUMBER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_number)
+            ],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
+
+    application.add_handler(conv_handler)
 
     logger.info("Bot Running...")
-
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    await application.updater.idle()
-
+    await application.run_polling()
 
 if __name__ == "__main__":
     asyncio.run(async_main())
