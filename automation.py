@@ -122,7 +122,10 @@ async def receive_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def get_whatsapp_pairing_code(number, user_id, context):
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+                )
             browser_context = await browser.new_context()
             page = await browser_context.new_page()
             
