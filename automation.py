@@ -18,6 +18,21 @@ from telegram.ext import (
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# ================== WEB SERVER (FOR RENDER PORT) ==================
+from flask import Flask
+from threading import Thread
+
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Bot is running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
+# ================================================================
+
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -36,6 +51,8 @@ user_data_store = {}
 
 scheduler = AsyncIOScheduler(timezone=pytz.timezone('Asia/Kolkata'))
 
+
+# ================= TELEGRAM BOT =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -113,18 +130,23 @@ async def get_whatsapp_pairing_code(number, user_id, context):
         await context.bot.send_message(chat_id=user_id, text="❌ Login failed or timed out.")
 
 
+# ================= ASYNC MAIN =================
+
 async def async_main():
+    Thread(target=run_web).start()  # Start Flask server for Render
+
     if not TOKEN:
-        logger.error("TOKEN missing")
+        logger.error("TELEGRAM_BOT_TOKEN missing")
         return
 
     application = Application.builder().token(TOKEN).build()
 
-    scheduler.start()  # ✅ Now safe here
+    scheduler.start()
 
     application.add_handler(CommandHandler("start", start))
 
     logger.info("Bot Running...")
+
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
